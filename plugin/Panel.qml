@@ -1106,19 +1106,75 @@ Panel {
           checked: root.cfg.keepAudio !== false
           onToggled: if (root.svc) root.svc.setSetting("keepAudio", root.cfg.keepAudio === false)
         }
-        Row {
+        // Bar animation: four live tiles, each showing its style with a pretend voice.
+        Column {
+          id: animCol
           width: parent.width
-          spacing: Style.space(8)
-          RowLabel { text: "Bar animation" }
-          Dropdown {
-            width: parent.width - root.labelW - parent.spacing - root.trailInset
-            showLabel: false
-            enabled: root.connected
-            value: String(root.cfg.animation || "bars")
-            options: [ { value: "bars", label: "Bars" }, { value: "wave", label: "Wave" }, { value: "pulse", label: "Pulse" }, { value: "dots", label: "Dots" } ]
-            foreground: root.fg
-            fontFamily: root.fontFamily
-            onChanged: function(v) { if (root.svc) root.svc.setSetting("animation", v); value = Qt.binding(function() { return String(root.cfg.animation || "bars") }) }
+          spacing: Style.space(6)
+          Text { text: "Bar animation"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.body }
+
+          // A synthetic voice envelope shared by the previews: phrases with pauses.
+          property var demoLevels: []
+          property real demoT: 0
+          Timer {
+            interval: 50
+            repeat: true
+            running: settingsLoader.active && root.opened
+            onTriggered: {
+              var col = animCol
+              col.demoT += 0.05
+              var phrase = (Math.sin(col.demoT * 0.9) + 1) / 2 > 0.35          // talking vs. a pause
+              var v = phrase ? 0.25 + 0.55 * Math.abs(Math.sin(col.demoT * 7.3) * Math.sin(col.demoT * 2.1)) + Math.random() * 0.15 : 0.03 + Math.random() * 0.04
+              var lv = col.demoLevels.slice(-47)
+              lv.push(Math.min(1, v))
+              col.demoLevels = lv
+            }
+          }
+
+          Row {
+            width: parent.width - root.trailInset
+            spacing: Style.space(8)
+            Repeater {
+              model: [ { key: "bars", label: "Bars" }, { key: "wave", label: "Wave" }, { key: "pulse", label: "Pulse" }, { key: "dots", label: "Dots" } ]
+              Rectangle {
+                id: tile
+                required property var modelData
+                readonly property bool current: String(root.cfg.animation || "bars") === modelData.key
+                width: (parent.width - parent.spacing * 3) / 4
+                height: Style.space(52)
+                radius: Style.cornerRadius
+                color: current ? Style.selectedFillFor(root.fg, Color.accent) : tileHover.hovered ? Style.hoverFillFor(root.fg, Color.accent) : Style.normalFillFor(root.fg, Color.accent)
+                border.width: current ? 1 : 0
+                border.color: Color.accent
+                HoverHandler { id: tileHover }
+                Column {
+                  anchors.centerIn: parent
+                  spacing: Style.space(6)
+                  Waveform {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    height: Style.bar.iconCanvas
+                    style: tile.modelData.key
+                    bars: 18
+                    levels: animCol.demoLevels
+                    color: root.green
+                  }
+                  Text {
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    text: tile.modelData.label
+                    color: tile.current ? Color.accent : root.dim
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                    font.bold: tile.current
+                  }
+                }
+                MouseArea {
+                  anchors.fill: parent
+                  cursorShape: Qt.PointingHandCursor
+                  enabled: root.connected
+                  onClicked: if (root.svc) root.svc.setSetting("animation", tile.modelData.key)
+                }
+              }
+            }
           }
         }
         Row {
