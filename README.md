@@ -1,4 +1,15 @@
-# Speech to Text
+# Speech to Text (Voxtype wrapper that's good looking)
+
+
+
+
+
+https://github.com/user-attachments/assets/55d86289-ce72-4d24-94a0-d4888110cc01
+
+
+
+
+
 
 Dictation for Omarchy: press a key, talk, press it again, and the words are pasted where your cursor is. A live waveform and the words as they are recognised show in the bar while you talk; every recording is kept with its text so you can play it back, copy or paste it again.
 
