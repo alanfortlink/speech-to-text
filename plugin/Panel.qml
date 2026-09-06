@@ -151,7 +151,7 @@ Panel {
     active: root.busy || root.showError
     useActiveColor: true
     activeColor: root.busy ? root.takeColor : Color.urgent
-    tooltipText: (root.connected ? "Speech to text" : "Speech to text · starting")
+    tooltipText: (root.connected ? (root.svc.missing.length ? "Speech to text · click to install " + root.svc.missing.join(", ") : "Speech to text") : "Speech to text · starting")
                  + (root.svc && root.svc.error !== "" ? " · " + root.svc.error : "")
                  + (root.keyFor(root.defaultLang) !== "" ? " · " + root.keyFor(root.defaultLang) + ": dictate " + root.langName(root.defaultLang) : "")
                  + " · right-click: dictate"
@@ -272,6 +272,14 @@ Panel {
     return { value: e, label: ({ voxtype: "Omarchy built-in (voxtype)", "whisper-cpp": "whisper.cpp", command: "Custom command" })[e] || e }
   })
   readonly property var langOpts: langs.map(function(l) { return { value: l.code, label: l.label || l.code } })
+  readonly property string sourcesJson: JSON.stringify(svc ? svc.sources : [])
+  readonly property var micOpts: {
+    var list = JSON.parse(sourcesJson), cur = String(cfg.device || "default")
+    var opts = [ { value: "default", label: "System default" } ]
+    for (var i = 0; i < list.length; i++) opts.push({ value: String(list[i].name), label: String(list[i].label) })
+    if (cur !== "default" && !list.some(function(m) { return String(m.name) === cur })) opts.push({ value: cur, label: cur + " (not connected)" })
+    return opts
+  }
   readonly property string conflictsJson: JSON.stringify(svc ? svc.conflicts : [])
   readonly property var conflicts: JSON.parse(conflictsJson)
   function conflictText() {
@@ -470,6 +478,39 @@ Panel {
                 // The text is pasted into the focused window, so the popup gets out of the way first.
                 onClicked: root.closeThen(function() { if (root.svc) root.svc.toggle(null, false) })
               }
+            }
+          }
+        }
+
+        // A stock machine may not have the dictation engine yet: say so, and install it from here.
+        Rectangle {
+          width: parent.width
+          visible: root.connected && root.svc.missing.length > 0
+          height: missingCol.implicitHeight + Style.space(16)
+          radius: Style.cornerRadius
+          color: Style.normalFillFor(root.fg, Color.accent)
+          Column {
+            id: missingCol
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            anchors.margins: Style.space(8)
+            spacing: Style.space(6)
+            Text {
+              width: parent.width
+              text: "Dictation needs " + (root.svc ? root.svc.missing.join(", ") : "") + " to be installed. Omarchy's installer takes care of it (about 150 MB, asks for your password)."
+              color: root.fg
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.body
+              wrapMode: Text.Wrap
+            }
+            Button {
+              text: "Install"
+              iconText: "󰇚"
+              foreground: root.fg
+              fontFamily: root.fontFamily
+              bordered: true
+              onClicked: { if (root.svc) root.svc.install(); root.close() }
             }
           }
         }
@@ -811,20 +852,6 @@ Panel {
                   onClicked: { if (root.svc) root.svc.copyTake(row.modelData.id); row.copied = true; copiedTimer.restart() }
                 }
                 PanelActionButton {
-                  iconText: "󰆒"
-                  tooltipText: "Paste into the focused window"
-                  foreground: root.fg
-                  fontFamily: root.fontFamily
-                  onClicked: { var id = row.modelData.id; root.closeThen(function() { if (root.svc) root.svc.pasteTake(id, false) }) }
-                }
-                PanelActionButton {
-                  iconText: "󰌑"
-                  tooltipText: "Paste and press Return"
-                  foreground: root.fg
-                  fontFamily: root.fontFamily
-                  onClicked: { var id = row.modelData.id; root.closeThen(function() { if (root.svc) root.svc.pasteTake(id, true) }) }
-                }
-                PanelActionButton {
                   iconText: "󰆴"
                   tooltipText: "Delete"
                   foreground: root.fg
@@ -1077,6 +1104,23 @@ Panel {
           checked: root.cfg.keepAudio !== false
           onToggled: if (root.svc) root.svc.setSetting("keepAudio", root.cfg.keepAudio === false)
         }
+        Row {
+          width: parent.width
+          spacing: Style.space(8)
+          RowLabel { text: "Keep history" }
+          Dropdown {
+            width: parent.width - root.labelW - parent.spacing - root.trailInset
+            showLabel: false
+            enabled: root.connected
+            value: String(root.cfg.historyDays === undefined ? 30 : root.cfg.historyDays)
+            options: [ { value: "1", label: "For a day" }, { value: "7", label: "For a week" }, { value: "30", label: "For a month" },
+                       { value: "90", label: "For 3 months" }, { value: "365", label: "For a year" }, { value: "0", label: "Forever" } ]
+            foreground: root.fg
+            fontFamily: root.fontFamily
+            onChanged: function(v) { if (root.svc) root.svc.setSetting("historyDays", parseInt(v)); value = Qt.binding(function() { return String(root.cfg.historyDays === undefined ? 30 : root.cfg.historyDays) }) }
+          }
+        }
+        Note { text: "Older recordings and their audio are deleted automatically." }
       }
 
       // ---------- Advanced (collapsed) ----------
@@ -1209,12 +1253,18 @@ Panel {
             width: parent.width
             spacing: Style.space(8)
             RowLabel { text: "Microphone" }
-            ConfigField {
+            Dropdown {
               width: parent.width - root.labelW - parent.spacing - root.trailInset
-              placeholderText: "default"
-              key: "device"
+              showLabel: false
+              enabled: root.connected
+              value: String(root.cfg.device || "default")
+              options: root.micOpts
+              foreground: root.fg
+              fontFamily: root.fontFamily
+              onChanged: function(v) { if (root.svc) root.svc.setSetting("device", v); value = Qt.binding(function() { return String(root.cfg.device || "default") }) }
             }
           }
+          Note { text: "A Bluetooth headset switches to its low-quality headset profile while its microphone is open, which pauses or degrades whatever it is playing. Pick another microphone here to avoid that." }
           Row {
             width: parent.width
             spacing: Style.space(8)

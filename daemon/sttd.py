@@ -72,7 +72,8 @@ DEFAULT_CONFIG = {
     "liveText": True,             # transcribe while recording and show it in the bar
     "liveIntervalMs": 1500,
     "liveWindowSecs": 30,
-    "keepAudio": True,            # keep the wav of every take next to its text
+    "keepAudio": True,            # keep the wav of every recording next to its text
+    "historyDays": 30,            # delete recordings older than this (0 = keep forever)
     "outputMode": "paste",        # paste | type | clipboard
     "pasteKeys": "auto",          # auto | ctrl+v | ctrl+shift+v | shift+insert
     "restoreClipboard": True,
@@ -760,6 +761,39 @@ def deliver(cfg, text, enter):
         wl_copy(saved)
 
 
+def audio_sources():
+    """Microphones PipeWire offers: [{name, label}] (a virtual one like Microphone Effects included)."""
+    try:
+        r = subprocess.run(["pw-dump"], capture_output=True, text=True, timeout=5)
+        nodes = json.loads(r.stdout) if r.returncode == 0 else []
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        return []
+    out = []
+    for n in nodes:
+        props = (n.get("info") or {}).get("props") or {}
+        if props.get("media.class") != "Audio/Source":
+            continue
+        name = str(props.get("node.name") or "")
+        if not name or name.startswith("alsa_output") or "monitor" in name:
+            continue
+        out.append({"name": name, "label": str(props.get("node.description") or props.get("node.nick") or name)})
+    return out
+
+
+def missing_tools(cfg):
+    """What a stock machine may still lack; the panel offers to install it."""
+    out = []
+    if not which("pw-record"):
+        out.append("pipewire")
+    if not which("wtype"):
+        out.append("wtype")
+    if cfg.get("engine", "voxtype") == "voxtype" and not which("voxtype"):
+        out.append("voxtype")
+    if not which("wl-copy"):
+        out.append("wl-clipboard")
+    return out
+
+
 def deliver_agent(cfg, text):
     """Blocking. Hands the text to the default coding agent (a new terminal) instead of pasting it."""
     tmpl = cfg.get("agentCommand") or "omarchy-agent-prompt {text}"
@@ -835,6 +869,22 @@ class History:
         self.db.execute("UPDATE takes SET text=? WHERE id=?", (text, id))
         self.db.commit()
 
+    def prune(self, days):
+        """Delete recordings older than `days` (0: keep everything). Returns how many went."""
+        if not days or days <= 0:
+            return 0
+        cutoff = time.time() - days * 86400
+        rows = self.db.execute("SELECT id, audio FROM takes WHERE created_at < ?", (cutoff,)).fetchall()
+        for id, audio in rows:
+            if audio:
+                try:
+                    os.remove(audio)
+                except OSError:
+                    pass
+        self.db.execute("DELETE FROM takes WHERE created_at < ?", (cutoff,))
+        self.db.commit()
+        return len(rows)
+
 
 # ---------------------------------------------------------------------------
 # daemon
@@ -867,6 +917,8 @@ class Daemon:
         self.wanted_model = ""   # model a refused recording was waiting for
         self.engines = available_engines()  # cached: state is pushed 20×/s while recording
         self.agent = self.agent_name()
+        self.sources = audio_sources()
+        self.missing = missing_tools(self.cfg)
         self.error_clear = None  # timer handle: errors fade by themselves
         self.loop = None
         self.stopping = False
@@ -898,10 +950,19 @@ class Daemon:
             "download": self.download,
             "agentName": self.agent,
             "agentMode": self.agent_mode if self.state != "idle" else False,
+            "missing": self.missing,
         }
         if full:
             msg["languageNames"] = LANGUAGES
+            msg["sources"] = self.sources
         return msg
+
+    def refresh_environment(self):
+        """Things that change rarely and cost a subprocess: only on demand."""
+        self.engines = available_engines()
+        self.agent = self.agent_name()
+        self.sources = audio_sources()
+        self.missing = missing_tools(self.cfg)
 
     def broadcast(self, msg=None):
         line = (json.dumps(msg or self.state_msg()) + "\n").encode()
@@ -1025,16 +1086,13 @@ class Daemon:
         if self.state != "idle":
             self.broadcast()
             return
-        if not which("pw-record"):
-            self.fail("pw-record (PipeWire) is not installed")
+        self.missing = missing_tools(self.cfg)
+        if self.missing:
+            self.fail("Dictation needs " + ", ".join(self.missing) + " — open the microphone icon to install it")
             self.broadcast()
             return
         self.agent_mode = bool(agent)
         self.lang = self.find_lang(code)
-        if self.cfg.get("engine", "voxtype") == "voxtype" and not which("voxtype"):
-            self.fail("voxtype is not installed — run omarchy-voxtype-install")
-            self.broadcast()
-            return
         model = model_for(self.cfg, self.lang)
         if model and not os.path.exists(model_path(model)):
             # Not an error: the bar shows "Getting ready for <language> · N%" while it downloads.
@@ -1227,6 +1285,8 @@ class Daemon:
                     await self.loop.run_in_executor(None, deliver_agent, self.cfg, text)
                 else:
                     await self.loop.run_in_executor(None, deliver, self.cfg, text, self.enter_pending)
+                if self.history.prune(self.cfg.get("historyDays", 30)):
+                    log("history pruned")
                 self.broadcast({"type": "history-changed"})
         except asyncio.CancelledError:
             self._discard(path)
@@ -1345,8 +1405,9 @@ class Daemon:
         except OSError as e:
             self.fail(f"cannot save config: {e}")
         self.binds.apply(self.cfg)
-        self.engines = available_engines()
-        self.agent = self.agent_name()
+        self.refresh_environment()
+        if "historyDays" in (patch or {}) and self.history.prune(self.cfg.get("historyDays", 30)):
+            self.broadcast({"type": "history-changed"})
         self.ensure_models()
 
     # ---- socket ----
@@ -1403,7 +1464,13 @@ class Daemon:
     async def dispatch(self, msg, writer):
         cmd = msg.get("cmd")
         if cmd == "get":
+            self.refresh_environment()
             writer.write((json.dumps(self.state_msg(full=True)) + "\n").encode())
+        elif cmd == "install":
+            # Omarchy's own installer (asks for confirmation and the password in a floating terminal).
+            self.spawn(self.loop.run_in_executor(None, lambda: subprocess.Popen(
+                ["omarchy-launch-floating-terminal-with-presentation", "omarchy-voxtype-install"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)))
         elif cmd == "toggle":
             self.spawn(self.toggle(self._lang(msg), bool(msg.get("enter")), bool(msg.get("agent"))))
         elif cmd == "start":
@@ -1523,6 +1590,8 @@ class Daemon:
         server = await asyncio.start_unix_server(self.handle, path=SOCK, limit=1 << 20)
         self.binds.sweep()
         self.binds.apply(self.cfg)
+        if self.history.prune(self.cfg.get("historyDays", 30)):
+            log("history pruned")
         self.ensure_models()
         self.loop.create_task(self.hypr_events())
         for s in (signal.SIGTERM, signal.SIGINT):

@@ -38,6 +38,8 @@ Item {
   readonly property var download: state.download || null             // {model, pct} while a model is fetched
   readonly property string agentName: state.agentName || ""          // omarchy's default coding agent
   readonly property bool agentMode: !!state.agentMode                // this recording goes to the agent
+  readonly property var missing: state.missing || []                 // tools a stock machine still lacks (voxtype, wtype…)
+  property var sources: []                                           // microphones (sent with the greeting and on `get`)
 
   // ---- history (fetched on demand; the daemon says when it changed) ----
   property var historyItems: []
@@ -72,6 +74,7 @@ Item {
   function rebind() { return send({ cmd: "rebind" }) }
   function setLang(code) { return send({ cmd: "setLang", lang: code }) }
   // While the panel captures a key, our own binds must not fire on it.
+  function install() { return send({ cmd: "install" }) }   // omarchy-voxtype-install in a floating terminal
   function suspendBinds() { return send({ cmd: "suspendBinds" }) }
   function resumeBinds() { return send({ cmd: "resumeBinds" }) }
   function loadHistory(query, limit) {
@@ -140,6 +143,7 @@ Item {
           if (!msg) return
           if (msg.type === "state") {
             if (msg.languageNames) root.languageNames = msg.languageNames
+            if (msg.sources) root.sources = msg.sources
             root.state = msg
             if (root.daemonError !== "") root.daemonError = ""
           } else if (msg.type === "history") {

@@ -11,7 +11,7 @@ Dictation for Omarchy: press a key, talk, press it again, and the words are past
 - **Ask your agent**: a second key per language hands the text to Omarchy's default coding agent (`omarchy default agent`) instead of pasting it.
 - **Live waveform and live text** in the bar: yellow while the microphone connects, green while it listens; the bar goes back to the icon the moment the text is pasted.
 - **Stop is instant**: the recording is transcribed at every pause while you talk, so only the last phrase is left when you stop.
-- **History** of every recording (text + audio) with play, copy, paste, paste-and-send and delete, searchable, in the bar popup.
+- **History** of every recording (text + audio) with play, copy and delete, searchable, in the bar popup; kept for a month by default (Settings).
 - **Languages** picked from Whisper's list; the model a language needs is downloaded by itself the first time (about 150 MB for the default model; the bar shows the progress). English-only models are swapped for the multilingual one.
 - **Engine**: Omarchy's own dictation engine, [voxtype](https://github.com/peteonrails/voxtype) (local Whisper), by default, so there is nothing new to install. whisper.cpp (`whisper-cli`) and any custom command are also supported (Settings → Advanced).
 - **Safe key bindings**: a key that anything else already uses is refused, never taken over.
@@ -23,11 +23,11 @@ Dictation for Omarchy: press a key, talk, press it again, and the words are past
 omarchy plugin add https://github.com/alanfortlink/speech-to-text.git --enable
 ```
 
-That is all: the microphone icon appears in the bar, the daemon starts with the shell and applies the key bindings itself (nothing in `~/.config/hypr` is touched).
+That is all. The microphone icon appears in the bar, the daemon starts with the shell and applies the key bindings itself (nothing in `~/.config/hypr` is touched).
+
+If Omarchy's dictation engine (voxtype) is not installed yet, the popup says so and offers an **Install** button, which runs `omarchy-voxtype-install` in a floating terminal (about 150 MB, asks for your password). Everything else the plugin needs is part of a stock Omarchy: PipeWire, `wl-clipboard`, `curl`, Python 3; `wtype` comes with voxtype.
 
 Optional: `~/.config/omarchy/plugins/alanfortlink.speech-to-text/install.sh` puts the `stt` command on your PATH. From a checkout anywhere else, `./install.sh` also links the checkout into the plugins directory (handy for development).
-
-Requires `voxtype` (Omarchy ships it: `omarchy-voxtype-install`), `pipewire`, `wtype`, `wl-clipboard`, `curl`. All present on a stock Omarchy.
 
 ## Use
 
