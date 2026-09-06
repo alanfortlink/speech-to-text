@@ -9,7 +9,8 @@ Dictation for Omarchy: press a key, talk, press it again, and the words are past
 - **One key per language** (default: `SUPER ALT D` for English; set your own in Settings). Press to start, press again to stop and paste. Esc discards.
 - **+ Return** per language: also press Return after pasting (for chat boxes and prompts).
 - **Ask your agent**: a second key per language hands the text to Omarchy's default coding agent (`omarchy default agent`) instead of pasting it.
-- **Live waveform and live text** in the bar: yellow while the microphone connects, green while it listens; the bar goes back to the icon the moment the text is pasted.
+- **Live waveform and live text** in the bar, in the language you are dictating: yellow while the microphone opens, green once your voice is actually coming through; the bar goes back to the icon the moment the text is pasted. Pick the look in Settings: bars, wave, pulse or dots.
+- **Never miss the first words**: Settings → Advanced → "Keep the microphone open" keeps the stream running between recordings, so a recording starts instantly and even includes the half second before the key press. (Not for a Bluetooth headset: it would stay in headset mode all the time.)
 - **Stop is instant**: the recording is transcribed at every pause while you talk, so only the last phrase is left when you stop.
 - **History** of every recording (text + audio) with play, copy and delete, searchable, in the bar popup; kept for a month by default (Settings).
 - **Languages** picked from Whisper's list; the model a language needs is downloaded by itself the first time (about 150 MB for the default model; the bar shows the progress). English-only models are swapped for the multilingual one.

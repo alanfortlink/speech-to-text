@@ -39,6 +39,8 @@ Item {
   readonly property string agentName: state.agentName || ""          // omarchy's default coding agent
   readonly property bool agentMode: !!state.agentMode                // this recording goes to the agent
   readonly property var missing: state.missing || []                 // tools a stock machine still lacks (voxtype, wtype…)
+  readonly property var strings: state.strings || ({})               // bar wording in the language being dictated
+  readonly property bool warm: !!state.warm                          // the microphone stream is kept open between recordings
   property var sources: []                                           // microphones (sent with the greeting and on `get`)
 
   // ---- history (fetched on demand; the daemon says when it changed) ----

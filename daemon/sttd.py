@@ -58,6 +58,38 @@ LANGUAGES = {
     "ha": "Hausa", "so": "Somali", "uz": "Uzbek", "tg": "Tajik", "be": "Belarusian", "bs": "Bosnian", "mt": "Maltese",
     "ga": "Irish", "la": "Latin", "yi": "Yiddish", "mi": "Maori", "haw": "Hawaiian", "jw": "Javanese", "su": "Sundanese",
 }
+# What the bar says while recording, in the language being dictated.
+UI_STRINGS = {
+    "en": {"listening": "Listening…", "opening": "Opening microphone…", "transcribing": "Transcribing…"},
+    "pt": {"listening": "Ouvindo…", "opening": "Abrindo o microfone…", "transcribing": "Transcrevendo…"},
+    "es": {"listening": "Escuchando…", "opening": "Abriendo el micrófono…", "transcribing": "Transcribiendo…"},
+    "fr": {"listening": "À l’écoute…", "opening": "Ouverture du micro…", "transcribing": "Transcription…"},
+    "de": {"listening": "Ich höre zu…", "opening": "Mikrofon wird geöffnet…", "transcribing": "Transkribiere…"},
+    "it": {"listening": "In ascolto…", "opening": "Apertura del microfono…", "transcribing": "Trascrizione…"},
+    "nl": {"listening": "Luistert…", "opening": "Microfoon openen…", "transcribing": "Transcriberen…"},
+    "pl": {"listening": "Słucham…", "opening": "Otwieranie mikrofonu…", "transcribing": "Transkrypcja…"},
+    "sv": {"listening": "Lyssnar…", "opening": "Öppnar mikrofonen…", "transcribing": "Transkriberar…"},
+    "da": {"listening": "Lytter…", "opening": "Åbner mikrofonen…", "transcribing": "Transskriberer…"},
+    "no": {"listening": "Lytter…", "opening": "Åpner mikrofonen…", "transcribing": "Transkriberer…"},
+    "fi": {"listening": "Kuuntelee…", "opening": "Avataan mikrofonia…", "transcribing": "Litteroidaan…"},
+    "tr": {"listening": "Dinliyor…", "opening": "Mikrofon açılıyor…", "transcribing": "Yazıya dökülüyor…"},
+    "ru": {"listening": "Слушаю…", "opening": "Открываю микрофон…", "transcribing": "Расшифровка…"},
+    "uk": {"listening": "Слухаю…", "opening": "Відкриваю мікрофон…", "transcribing": "Розшифровка…"},
+    "cs": {"listening": "Poslouchám…", "opening": "Otevírám mikrofon…", "transcribing": "Přepisuji…"},
+    "el": {"listening": "Ακούω…", "opening": "Άνοιγμα μικροφώνου…", "transcribing": "Απομαγνητοφώνηση…"},
+    "he": {"listening": "מקשיב…", "opening": "פותח מיקרופון…", "transcribing": "מתמלל…"},
+    "ar": {"listening": "أستمع…", "opening": "جارٍ فتح الميكروفون…", "transcribing": "جارٍ التفريغ…"},
+    "hi": {"listening": "सुन रहा है…", "opening": "माइक्रोफ़ोन खुल रहा है…", "transcribing": "लिख रहा है…"},
+    "ja": {"listening": "聞いています…", "opening": "マイクを開いています…", "transcribing": "文字起こし中…"},
+    "zh": {"listening": "正在聆听…", "opening": "正在打开麦克风…", "transcribing": "正在转写…"},
+    "ko": {"listening": "듣고 있습니다…", "opening": "마이크 여는 중…", "transcribing": "받아쓰는 중…"},
+    "id": {"listening": "Mendengarkan…", "opening": "Membuka mikrofon…", "transcribing": "Menyalin…"},
+    "vi": {"listening": "Đang nghe…", "opening": "Đang mở micrô…", "transcribing": "Đang ghi lại…"},
+    "th": {"listening": "กำลังฟัง…", "opening": "กำลังเปิดไมโครโฟน…", "transcribing": "กำลังถอดความ…"},
+    "hu": {"listening": "Hallgatom…", "opening": "Mikrofon megnyitása…", "transcribing": "Átírás…"},
+    "ro": {"listening": "Ascult…", "opening": "Deschid microfonul…", "transcribing": "Transcriu…"},
+    "ca": {"listening": "Escoltant…", "opening": "Obrint el micròfon…", "transcribing": "Transcrivint…"},
+}
 VOXTYPE_MODELS = os.environ.get("STT_MODELS_DIR") or os.path.join(os.environ.get("XDG_DATA_HOME", os.path.join(HOME, ".local", "share")), "voxtype", "models")
 MODEL_URL = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-{model}.bin"
 
@@ -79,6 +111,9 @@ DEFAULT_CONFIG = {
     "restoreClipboard": True,
     "maxDurationSecs": 300,
     "device": "default",
+    "animation": "bars",          # what the bar shows while recording: bars | wave | pulse | dots
+    "warmMic": False,             # keep the microphone stream open between recordings: instant start + pre-roll
+    "prerollMs": 600,             # audio from just before the key press that a warm microphone keeps
     "cancelKey": "ESCAPE",
     "notify": True,
 }
@@ -434,7 +469,9 @@ class Recorder:
         self.lock = threading.Lock()
         self.started = 0.0
         self.error = ""
-        self.listening = False  # first audio chunk has arrived (pw-record takes a moment to connect)
+        self.listening = False  # real audio is arriving (a Bluetooth mic sends silence while it switches profile)
+        self.chunks = 0
+        self.standby = False    # warm mode: the stream runs but only the last second is kept
 
     def start(self):
         fake = os.environ.get("STT_FAKE_INPUT")  # tests: stream a 16 kHz mono wav at real-time pace instead of the mic
@@ -459,29 +496,62 @@ class Recorder:
             data = out.read(CHUNK)
             if not data:
                 break
-            self.listening = True
             n = len(data) // 2
             samples = struct.unpack(f"<{n}h", data[: n * 2])
             rms = math.sqrt(sum(s * s for s in samples) / max(1, n)) / 32768.0
             level = min(1.0, math.sqrt(rms * 12.0))  # perceptual-ish: speech at normal level fills most of the bar
+            self.chunks += 1
+            # Green means "your voice is getting through": any real signal (room noise counts),
+            # or 2 s of chunks for a microphone that is digitally silent.
+            if rms > 0.0005 or self.chunks >= 40:
+                self.listening = True
             with self.lock:
                 self.buf += data
-                self.levels.append(round(level, 3))  # one per 50 ms; indexed by absolute offset, so never trimmed
+                self.levels.append(round(level, 3))  # one per 50 ms; indexed by absolute offset, never trimmed while recording
+                if self.standby and len(self.buf) > 3 * RATE * 2:  # warm: keep only the last 1.5 s
+                    drop = len(self.buf) - int(1.5 * RATE) * 2
+                    drop -= drop % CHUNK
+                    del self.buf[:drop]
+                    del self.levels[: drop // CHUNK]
         err = self.proc.stderr.read().decode(errors="replace").strip()
         rc = self.proc.wait()
         if rc not in (0, -15, -9) and err:
             self.error = err.splitlines()[-1]
 
     def stop(self):
+        """Blocking (up to ~1 s): call it from an executor, never on the event loop."""
         if self.proc and self.proc.poll() is None:
             self.proc.terminate()
             try:
-                self.proc.wait(timeout=2)
+                self.proc.wait(timeout=0.5)
             except subprocess.TimeoutExpired:
                 self.proc.kill()
                 self.proc.wait()
         if self.thread:
-            self.thread.join(timeout=2)
+            self.thread.join(timeout=1)
+
+    @property
+    def alive(self):
+        return self.proc is not None and self.proc.poll() is None
+
+    def park(self):
+        """Warm mode: keep the stream open between recordings, remembering only the last moment."""
+        with self.lock:
+            self.standby = True
+
+    def begin(self, preroll_secs):
+        """Turn a parked stream into a recording, keeping `preroll_secs` of what was just heard."""
+        keep = int(preroll_secs * RATE) * 2
+        keep -= keep % CHUNK
+        with self.lock:
+            self.standby = False
+            if keep and len(self.buf) > keep:
+                drop = len(self.buf) - keep
+                del self.buf[:drop]
+                del self.levels[: drop // CHUNK]
+            kept = len(self.buf)
+        self.started = time.time() - kept / 2 / RATE
+        self.error = ""
 
     @property
     def duration(self):
@@ -920,6 +990,7 @@ class Daemon:
         self.sources = audio_sources()
         self.missing = missing_tools(self.cfg)
         self.error_clear = None  # timer handle: errors fade by themselves
+        self.warm = None         # a parked Recorder (warmMic): the stream is already open when the key is pressed
         self.loop = None
         self.stopping = False
         self.stop_event = None
@@ -951,6 +1022,8 @@ class Daemon:
             "agentName": self.agent,
             "agentMode": self.agent_mode if self.state != "idle" else False,
             "missing": self.missing,
+            "strings": UI_STRINGS.get(self.lang["code"], UI_STRINGS["en"]),
+            "warm": bool(self.warm and self.warm.alive),
         }
         if full:
             msg["languageNames"] = LANGUAGES
@@ -1082,6 +1155,43 @@ class Daemon:
         self.download_task = None
         self.ensure_models()  # next one, if any
 
+    # ---- warm microphone ----
+    def ensure_warm(self):
+        """With warmMic on, keep a parked stream ready whenever nothing is recording."""
+        if self.stopping or self.state != "idle":
+            return
+        if not self.cfg.get("warmMic"):
+            if self.warm:
+                w, self.warm = self.warm, None
+                self.loop.run_in_executor(None, w.stop)
+            return
+        if self.warm and self.warm.alive:
+            return
+        if self.warm:
+            self.loop.run_in_executor(None, self.warm.stop)
+        if self.missing or not which("pw-record"):
+            self.warm = None
+            return
+        rec = Recorder(self.cfg.get("device", "default"))
+        try:
+            rec.start()
+        except (OSError, ValueError, TypeError) as e:
+            log("warm microphone failed:", e)
+            self.warm = None
+            return
+        rec.park()
+        self.warm = rec
+
+    async def release_rec(self, rec):
+        """A recording is over: park the stream (warm) or close it (off the loop: pw-record can take a moment to die)."""
+        if self.cfg.get("warmMic") and rec.alive and not self.stopping:
+            rec.park()
+            self.warm = rec
+        else:
+            if self.warm is rec:
+                self.warm = None
+            await self.loop.run_in_executor(None, rec.stop)
+
     async def start(self, code=None, agent=False):
         if self.state != "idle":
             self.broadcast()
@@ -1105,14 +1215,23 @@ class Daemon:
         self.committed = []
         self.committed_off = 0
         self.tail_text = ""
-        self.rec = Recorder(self.cfg.get("device", "default"))
-        try:
-            self.rec.start()
-        except (OSError, ValueError, TypeError) as e:
-            self.rec = None
-            self.fail(f"cannot record: {e}")
-            self.broadcast()
-            return
+        if self.warm and self.warm.alive and self.warm.device == self.cfg.get("device", "default"):
+            # The stream is already open: no start-up gap, and the moment before the key press comes along.
+            self.rec = self.warm
+            self.warm = None
+            self.rec.begin(max(0, int(self.cfg.get("prerollMs", 600))) / 1000)
+        else:
+            if self.warm:
+                self.warm.stop()
+                self.warm = None
+            self.rec = Recorder(self.cfg.get("device", "default"))
+            try:
+                self.rec.start()
+            except (OSError, ValueError, TypeError) as e:
+                self.rec = None
+                self.fail(f"cannot record: {e}")
+                self.broadcast()
+                return
         self.state = "recording"
         self.binds.set_cancel(self.cfg, True)
         self.broadcast()
@@ -1172,9 +1291,9 @@ class Daemon:
             return (n - 100 + j) * CHUNK
         return None
 
-    async def _transcribe_range(self, rec, a, b, prefix):
-        """Run the engine on buf[a:b] (under the engine lock). Returns text ('' for noise) or None on error."""
-        pcm = rec.snapshot_range(a, b)
+    async def _transcribe_range(self, audio, a, b, prefix):
+        """Run the engine on audio[a:b] (under the engine lock). Returns text ('' for noise) or None on error."""
+        pcm = bytes(audio[a:b])
         if len(pcm) < int(0.3 * RATE) * 2:
             return ""
         fd, tmp = tempfile.mkstemp(prefix=prefix, suffix=".wav", dir=RUNTIME)
@@ -1202,10 +1321,11 @@ class Daemon:
         await asyncio.sleep(interval)
         while self.state == "recording" and self.rec is rec:
             levels = rec.levels_copy()
+            audio = rec.snapshot()
             cut = self._find_cut(levels)
             if cut is not None and cut > self.committed_off:
                 a = self.committed_off
-                text = await self._transcribe_range(rec, a, cut, "live-") if self._voiced(levels, a, cut) else ""
+                text = await self._transcribe_range(audio, a, cut, "live-") if self._voiced(levels, a, cut) else ""
                 if self.rec is not rec:
                     return
                 if text is not None:  # on an engine error the segment stays uncommitted and is retried
@@ -1214,9 +1334,9 @@ class Daemon:
                     self.committed_off = cut
                     self.tail_text = ""
             else:
-                a, b = self.committed_off, rec.size
+                a, b = self.committed_off, len(audio)
                 if b - a > int(0.8 * RATE) * 2 and self._voiced(levels, a, b):
-                    text = await self._transcribe_range(rec, a, b, "live-")
+                    text = await self._transcribe_range(audio, a, b, "live-")
                     if self.rec is not rec:
                         return
                     if text:
@@ -1230,8 +1350,11 @@ class Daemon:
             self.broadcast()
             return
         rec = self.rec
-        rec.stop()
+        pcm = rec.snapshot()          # frozen now: a parked stream keeps only its last moment
+        levels = rec.levels_copy()
+        started = rec.started
         self.state = "transcribing"
+        await self.release_rec(rec)
         self.enter_pending = bool(enter)
         agent = bool(agent) or self.agent_mode
         lang = self.lang
@@ -1239,9 +1362,7 @@ class Daemon:
         self.broadcast()
         path = ""
         try:
-            pcm = rec.snapshot()
             duration = len(pcm) / 2 / RATE
-            started = rec.started
             stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(started))
             path = os.path.join(TAKES, f"{stamp}-{lang['code']}.wav")
             write_wav(path, pcm)
@@ -1257,7 +1378,7 @@ class Daemon:
                     raise asyncio.CancelledError
                 committed, off = list(self.committed), self.committed_off
                 a, b = off, len(pcm)
-                tail = await self._transcribe_range(rec, a, b, "final-") if self._voiced(rec.levels_copy(), a, b) else ""
+                tail = await self._transcribe_range(pcm, a, b, "final-") if self._voiced(levels, a, b) else ""
                 if tail is None:
                     text, err = "", self.error
                 else:
@@ -1300,6 +1421,7 @@ class Daemon:
                 self.state = "idle"
                 self.rec = None
                 self.partial = ""
+                self.ensure_warm()
                 self.broadcast()
 
     @staticmethod
@@ -1313,13 +1435,16 @@ class Daemon:
         if self.state == "idle":
             self.broadcast()
             return
-        if self.rec:
-            self.rec.stop()
-        EngineRun.kill()   # a transcription in flight is for a recording nobody wants
+        rec = self.rec
         self.state = "idle"
         self.rec = None
         self.partial = ""
+        EngineRun.kill()   # a transcription in flight is for a recording nobody wants
         self.binds.set_cancel(self.cfg, False)
+        self.broadcast()
+        if rec:
+            await self.release_rec(rec)
+        self.ensure_warm()
         self.broadcast()
 
     async def toggle(self, code=None, enter=False, agent=False):
@@ -1408,6 +1533,10 @@ class Daemon:
         self.refresh_environment()
         if "historyDays" in (patch or {}) and self.history.prune(self.cfg.get("historyDays", 30)):
             self.broadcast({"type": "history-changed"})
+        if self.warm and ("device" in (patch or {}) or not self.cfg.get("warmMic")):
+            w, self.warm = self.warm, None
+            self.loop.run_in_executor(None, w.stop)
+        self.ensure_warm()
         self.ensure_models()
 
     # ---- socket ----
@@ -1556,12 +1685,22 @@ class Daemon:
                 pass
             await asyncio.sleep(5)
 
+    async def warm_watch(self):
+        """A parked stream can die (device unplugged, headset off): reopen it when it does."""
+        while not self.stopping:
+            await asyncio.sleep(3)
+            if self.cfg.get("warmMic") and self.state == "idle" and (not self.warm or not self.warm.alive):
+                self.ensure_warm()
+
     async def shutdown(self):
         if self.stopping:
             return
         self.stopping = True
         if self.rec:
             self.rec.stop()
+        if self.warm:
+            self.warm.stop()
+            self.warm = None
         EngineRun.kill()
         if self.download_task and not self.download_task.done():
             self.download_task.cancel()
@@ -1592,8 +1731,10 @@ class Daemon:
         self.binds.apply(self.cfg)
         if self.history.prune(self.cfg.get("historyDays", 30)):
             log("history pruned")
+        self.ensure_warm()
         self.ensure_models()
         self.loop.create_task(self.hypr_events())
+        self.loop.create_task(self.warm_watch())
         for s in (signal.SIGTERM, signal.SIGINT):
             self.loop.add_signal_handler(s, lambda: self.loop.create_task(self.shutdown()))
         log(f"sttd {VERSION} listening on {SOCK}")

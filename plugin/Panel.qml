@@ -106,6 +106,7 @@ Panel {
     return ""
   }
   readonly property string defaultLang: langs.length ? langs[0].code : ""
+  function t(key, fallback) { var st = svc ? svc.strings : null; return st && st[key] ? st[key] : fallback }
   readonly property string agentName: svc && svc.agentName !== "" ? svc.agentName : "agent"
   function clock(secs) {
     var s = Math.floor(secs || 0)
@@ -122,17 +123,17 @@ Panel {
   function subtitle() {
     if (!svc) return "Service not loaded"
     if (!connected) return svc.daemonError !== "" ? svc.daemonError : "Starting…"
-    if (connecting) return "Opening the microphone…"
-    if (recording) return "Listening · " + svc.langLabel + " · " + clock(svc.elapsed) + (svc.agentMode ? " · to " + agentName : "")
-    if (transcribing) return "Transcribing…"
+    if (connecting) return t("opening", "Opening the microphone…")
+    if (recording) return t("listening", "Listening…").replace(/…$/, "") + " · " + svc.langLabel + " · " + clock(svc.elapsed) + (svc.agentMode ? " · to " + agentName : "")
+    if (transcribing) return t("transcribing", "Transcribing…")
     if (download) return "Getting ready for " + (download.lang || download.model) + " · " + download.pct + "%"
     return "Idle · " + svc.langLabel
   }
   readonly property string liveText: {
     if (!svc) return ""
-    if (connecting) return "Opening microphone…"
-    if (recording) return svc.partial !== "" ? svc.partial : "Listening…"
-    if (transcribing) return svc.partial !== "" ? svc.partial : (svc.agentMode ? "Sending to " + agentName + "…" : "Transcribing…")
+    if (connecting) return t("opening", "Opening microphone…")
+    if (recording) return svc.partial !== "" ? svc.partial : t("listening", "Listening…")
+    if (transcribing) return svc.partial !== "" ? svc.partial : (svc.agentMode ? "Sending to " + agentName + "…" : t("transcribing", "Transcribing…"))
     if (showError) return svc.error
     if (download) return "Getting ready for " + (download.lang || download.model) + " · " + download.pct + "%"
     return ""
@@ -173,6 +174,7 @@ Panel {
       Waveform {
         anchors.verticalCenter: parent.verticalCenter
         height: Style.bar.iconCanvas
+        style: ["bars", "wave", "pulse", "dots"].indexOf(String(root.cfg.animation)) >= 0 ? String(root.cfg.animation) : "bars"
         bars: 18
         levels: root.svc ? root.svc.levels : []
         sine: root.connecting || (root.download !== null && !root.busy)
@@ -1107,6 +1109,21 @@ Panel {
         Row {
           width: parent.width
           spacing: Style.space(8)
+          RowLabel { text: "Bar animation" }
+          Dropdown {
+            width: parent.width - root.labelW - parent.spacing - root.trailInset
+            showLabel: false
+            enabled: root.connected
+            value: String(root.cfg.animation || "bars")
+            options: [ { value: "bars", label: "Bars" }, { value: "wave", label: "Wave" }, { value: "pulse", label: "Pulse" }, { value: "dots", label: "Dots" } ]
+            foreground: root.fg
+            fontFamily: root.fontFamily
+            onChanged: function(v) { if (root.svc) root.svc.setSetting("animation", v); value = Qt.binding(function() { return String(root.cfg.animation || "bars") }) }
+          }
+        }
+        Row {
+          width: parent.width
+          spacing: Style.space(8)
           RowLabel { text: "Keep history" }
           Dropdown {
             width: parent.width - root.labelW - parent.spacing - root.trailInset
@@ -1265,6 +1282,13 @@ Panel {
             }
           }
           Note { text: "A Bluetooth headset switches to its low-quality headset profile while its microphone is open, which pauses or degrades whatever it is playing. Pick another microphone here to avoid that." }
+          SwitchRow {
+            label: "Keep the microphone open"
+            summary: checked ? "instant start, half a second of pre-roll" : "opens on each key press"
+            checked: !!root.cfg.warmMic
+            onToggled: if (root.svc) root.svc.setSetting("warmMic", !root.cfg.warmMic)
+          }
+          Note { text: "The stream stays open between recordings, so the first words are never missed: the recording even includes the moment before the key press. With a Bluetooth headset this keeps it in headset mode all the time, so pair it with a wired or USB microphone above." }
           Row {
             width: parent.width
             spacing: Style.space(8)
