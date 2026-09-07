@@ -113,6 +113,7 @@ DEFAULT_CONFIG = {
     "device": "default",
     "animation": "bars",          # what the bar shows while recording: bars | wave | pulse | dots
     "warmMic": False,             # keep the microphone stream open between recordings: instant start + pre-roll
+    "warmHoldSecs": 0,            # with warmMic: close the stream this long after the last recording (0 = keep it open)
     "prerollMs": 600,             # audio from just before the key press that a warm microphone keeps
     "cancelKey": "ESCAPE",
     "notify": True,
@@ -183,7 +184,10 @@ def load_config():
 
 
 def normalize_languages(langs):
-    out = []
+    """A language may appear several times (one entry that sends, one that
+    does not…): every entry gets its own id (en, en-2, …) that the key
+    bindings and `stt toggle --lang` refer to."""
+    out, ids = [], set()
     for l in langs or []:
         if not isinstance(l, dict):
             continue
@@ -191,11 +195,19 @@ def normalize_languages(langs):
         if code not in LANGUAGES:  # "pt-BR", "ptbr", "en_US" -> whisper's two-letter code
             base = code.split("-")[0]
             code = base if base in LANGUAGES else (base[:2] if base[:2] in LANGUAGES else code)
-        if code not in LANGUAGES or any(o["code"] == code for o in out):
+        if code not in LANGUAGES:
             continue  # unknown codes would reach `voxtype --language` and the bind's shell line
+        id = str(l.get("id", "") or "").strip().lower()
+        if not re.fullmatch(r"[a-z]{2,3}(-\d+)?", id) or not id.startswith(code) or id in ids:
+            n, id = 1, code
+            while id in ids:
+                n += 1
+                id = f"{code}-{n}"
+        ids.add(id)
         out.append({
+            "id": id,
             "code": code,
-            "label": LANGUAGES.get(code, str(l.get("label", "") or code)),
+            "label": LANGUAGES.get(code, code),
             "key": str(l.get("key", "") or "").strip(),
             "autoSend": bool(l.get("autoSend", False)),
             "agentKey": str(l.get("agentKey", "") or "").strip(),
@@ -317,12 +329,16 @@ class Binds:
     def specs(cfg):
         out = []
         for lang in cfg["languages"]:
-            code, label = lang["code"], lang["label"]
+            code, label, lid = lang["code"], lang["label"], lang.get("id") or lang["code"]
             if not code:
                 continue
+            if "-" in lid:  # a second entry for the same language: tell them apart in the keybindings list
+                label = f"{label} {lid.split('-')[1]}"
+            if lang.get("autoSend"):
+                label += ", sends"
             for field, desc, cmd in (
-                ("key", f"Dictate ({label}){MARK}", f"{shlex.quote(STT_CLI)} toggle --lang {code}"),
-                ("agentKey", f"Ask agent ({label}){MARK}", f"{shlex.quote(STT_CLI)} toggle --lang {code} --agent"),
+                ("key", f"Dictate ({label}){MARK}", f"{shlex.quote(STT_CLI)} toggle --lang {lid}"),
+                ("agentKey", f"Ask agent ({label}){MARK}", f"{shlex.quote(STT_CLI)} toggle --lang {lid} --agent"),
             ):
                 pk = parse_key(lang.get(field, ""))
                 if not pk:
@@ -991,6 +1007,7 @@ class Daemon:
         self.missing = missing_tools(self.cfg)
         self.error_clear = None  # timer handle: errors fade by themselves
         self.warm = None         # a parked Recorder (warmMic): the stream is already open when the key is pressed
+        self.warm_close = None   # timer handle: with warmHoldSecs, the parked stream closes after a quiet spell
         self.loop = None
         self.stopping = False
         self.stop_event = None
@@ -1052,12 +1069,16 @@ class Daemon:
                     pass
 
     # ---- recording ----
-    def find_lang(self, code):
-        """The language with this code, else the default (the first in the list)."""
+    def find_lang(self, ref):
+        """The entry with this id (en-2), else the first with this code, else the default (the first in the list)."""
         usable = [l for l in self.cfg["languages"] if l["code"]]
-        for l in usable:
-            if code and l["code"] == code:
-                return l
+        if ref:
+            for l in usable:
+                if l.get("id") == ref:
+                    return l
+            for l in usable:
+                if l["code"] == ref:
+                    return l
         return usable[0] if usable else self.cfg["languages"][0]
 
     @staticmethod
@@ -1172,6 +1193,10 @@ class Daemon:
         if self.missing or not which("pw-record"):
             self.warm = None
             return
+        if self.cfg.get("warmHoldSecs", 0) and self.cfg.get("warmHoldSecs", 0) > 0 and not self.rec:
+            # With a hold time the stream is only kept open *after* a recording, not opened ahead of one.
+            self.warm = None
+            return
         rec = Recorder(self.cfg.get("device", "default"))
         try:
             rec.start()
@@ -1182,11 +1207,33 @@ class Daemon:
         rec.park()
         self.warm = rec
 
+    def _arm_warm_close(self):
+        """With a hold time, a parked stream is closed once nothing has been recorded for that long
+        (a Bluetooth headset then drops back to its music profile)."""
+        if self.warm_close:
+            self.warm_close.cancel()
+            self.warm_close = None
+        hold = self.cfg.get("warmHoldSecs", 0)
+        if self.cfg.get("warmMic") and hold and hold > 0:
+            self.warm_close = self.loop.call_later(hold, self._close_warm)
+
+    def _close_warm(self):
+        self.warm_close = None
+        if not self.warm:
+            return
+        if self.state != "idle":  # still transcribing: look again in a moment
+            self.warm_close = self.loop.call_later(2, self._close_warm)
+            return
+        w, self.warm = self.warm, None
+        self.loop.run_in_executor(None, w.stop)
+        self.broadcast()
+
     async def release_rec(self, rec):
         """A recording is over: park the stream (warm) or close it (off the loop: pw-record can take a moment to die)."""
         if self.cfg.get("warmMic") and rec.alive and not self.stopping:
             rec.park()
             self.warm = rec
+            self._arm_warm_close()
         else:
             if self.warm is rec:
                 self.warm = None
@@ -1523,7 +1570,7 @@ class Daemon:
         if not (5 <= self.cfg.get("maxDurationSecs", 300) <= 7200):
             self.cfg["maxDurationSecs"] = DEFAULT_CONFIG["maxDurationSecs"]
         self.cfg["languages"] = normalize_languages(self.cfg.get("languages"))
-        if self.lang["code"] not in [l["code"] for l in self.cfg["languages"]]:
+        if self.lang.get("id") not in [l.get("id") for l in self.cfg["languages"]]:
             self.lang = self.cfg["languages"][0]
         try:
             save_config(self.cfg)
@@ -1537,6 +1584,8 @@ class Daemon:
             w, self.warm = self.warm, None
             self.loop.run_in_executor(None, w.stop)
         self.ensure_warm()
+        if self.warm:
+            self._arm_warm_close()
         self.ensure_models()
 
     # ---- socket ----
@@ -1689,7 +1738,7 @@ class Daemon:
         """A parked stream can die (device unplugged, headset off): reopen it when it does."""
         while not self.stopping:
             await asyncio.sleep(3)
-            if self.cfg.get("warmMic") and self.state == "idle" and (not self.warm or not self.warm.alive):
+            if self.cfg.get("warmMic") and self.state == "idle" and (not self.warm or not self.warm.alive) and not self.cfg.get("warmHoldSecs", 0):
                 self.ensure_warm()
 
     async def shutdown(self):

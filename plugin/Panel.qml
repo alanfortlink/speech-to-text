@@ -96,15 +96,7 @@ Panel {
     for (var i = 0; i < langs.length; i++) if (langs[i].code === code) return langs[i].label || code
     return code
   }
-  function keyFor(code, kind) {   // the applied key for one language ("" if none); kind "Dictate" (default) or "Ask agent"
-    if (!svc) return ""
-    var want = (kind || "Dictate") + " (" + langName(code) + ")", b = svc.binds || []
-    for (var i = 0; i < b.length; i++) {
-      if (String(b[i].desc || "") !== want) continue
-      return (b[i].mods ? b[i].mods + " " : "") + b[i].key
-    }
-    return ""
-  }
+  function keyFor(code) { return langs.length && langs[0].code === code ? String(langs[0].key || "") : "" }   // the default entry's dictate key
   readonly property string defaultLang: langs.length ? langs[0].code : ""
   function t(key, fallback) { var st = svc ? svc.strings : null; return st && st[key] ? st[key] : fallback }
   readonly property string agentName: svc && svc.agentName !== "" ? svc.agentName : "agent"
@@ -262,10 +254,9 @@ Panel {
   readonly property string langsJson: JSON.stringify(svc ? svc.languages : [])
   readonly property var langs: JSON.parse(langsJson)
   readonly property string namesJson: JSON.stringify(svc ? svc.languageNames : ({}))
-  readonly property var addableLangs: {
-    var names = JSON.parse(namesJson), have = {}, out = []
-    for (var i = 0; i < langs.length; i++) have[langs[i].code] = true
-    for (var code in names) if (!have[code]) out.push({ value: code, label: names[code] + " (" + code + ")" })
+  readonly property var addableLangs: {   // every language, even ones already there: a second entry can send, ask the agent…
+    var names = JSON.parse(namesJson), out = []
+    for (var code in names) out.push({ value: code, label: names[code] + " (" + code + ")" })
     out.sort(function(a, b) { return a.value === "auto" ? -1 : b.value === "auto" ? 1 : a.label.localeCompare(b.label) })
     return out
   }
@@ -301,9 +292,12 @@ Panel {
   function addLang(code) {
     if (!code) return
     var list = JSON.parse(langsJson)
-    for (var i = 0; i < list.length; i++) if (list[i].code === code) return
     list.push({ code: code, key: "", autoSend: false, agentKey: "", engineArgs: "" })
     saveLangs(list)
+  }
+  function langTitle(l) {   // "English", or "English · 2" for a second entry of the same language
+    var id = String(l.id || l.code), n = id.indexOf("-") > 0 ? id.slice(id.indexOf("-") + 1) : ""
+    return langName(l.code) + (n ? " · " + n : "")
   }
   function moveLang(index, delta) {   // the first language is the default
     var list = JSON.parse(langsJson), j = index + delta
@@ -976,7 +970,7 @@ Panel {
                 width: parent.width - langRow.cols.keyW * 2 - langRow.cols.sendW - langRow.cols.actW - parent.spacing * 4
                 Text {
                   width: parent.width
-                  text: root.langName(langRow.modelData.code)
+                  text: root.langTitle(langRow.modelData)
                   color: root.fg
                   font.family: root.fontFamily
                   font.pixelSize: Style.font.body
@@ -1089,7 +1083,7 @@ Panel {
           color: Color.urgent
           opacity: 1
         }
-        Note { text: "The first language is the default. + Return also presses Return after pasting. Esc discards while recording." }
+        Note { text: "The first entry is the default. + Return also presses Return after pasting. Add the same language twice for one key that sends and one that does not. Esc discards while recording." }
       }
 
       // ---------- The two switches that matter ----------
@@ -1338,13 +1332,27 @@ Panel {
             }
           }
           Note { text: "A Bluetooth headset switches to its low-quality headset profile while its microphone is open, which pauses or degrades whatever it is playing. Pick another microphone here to avoid that." }
-          SwitchRow {
-            label: "Keep the microphone open"
-            summary: checked ? "instant start, half a second of pre-roll" : "opens on each key press"
-            checked: !!root.cfg.warmMic
-            onToggled: if (root.svc) root.svc.setSetting("warmMic", !root.cfg.warmMic)
+          Row {
+            width: parent.width
+            spacing: Style.space(8)
+            RowLabel { text: "Keep mic open" }
+            Dropdown {
+              width: parent.width - root.labelW - parent.spacing - root.trailInset
+              showLabel: false
+              enabled: root.connected
+              readonly property string mode: !root.cfg.warmMic ? "off" : String(root.cfg.warmHoldSecs || 0)
+              value: mode
+              options: [ { value: "off", label: "No — open it on each key press" }, { value: "120", label: "For 2 minutes after a recording" },
+                         { value: "600", label: "For 10 minutes after a recording" }, { value: "0", label: "Always" } ]
+              foreground: root.fg
+              fontFamily: root.fontFamily
+              onChanged: function(v) {
+                if (root.svc) root.svc.setConfig(v === "off" ? { warmMic: false } : { warmMic: true, warmHoldSecs: parseInt(v) })
+                value = Qt.binding(function() { return mode })
+              }
+            }
           }
-          Note { text: "The stream stays open between recordings, so the first words are never missed: the recording even includes the moment before the key press. With a Bluetooth headset this keeps it in headset mode all the time, so pair it with a wired or USB microphone above." }
+          Note { text: "While the microphone is kept open a recording starts instantly and even includes the half second before the key press. A Bluetooth headset stays in headset mode (call-quality sound) for that time, so with one, prefer a timed option." }
           Row {
             width: parent.width
             spacing: Style.space(8)
