@@ -297,7 +297,7 @@ Panel {
   }
   function langTitle(l) {   // "English", or "English · 2" for a second entry of the same language
     var id = String(l.id || l.code), n = id.indexOf("-") > 0 ? id.slice(id.indexOf("-") + 1) : ""
-    return langName(l.code) + (n ? " · " + n : "")
+    return langName(l.code) + (n ? " " + n : "")
   }
   function moveLang(index, delta) {   // the first language is the default
     var list = JSON.parse(langsJson), j = index + delta
@@ -392,7 +392,7 @@ Panel {
     bar: root.bar
     open: root.opened
     focusTarget: keyCatcher
-    contentWidth: panel.fittedContentWidth(Style.space(520))
+    contentWidth: panel.fittedContentWidth(Style.space(560))
     contentHeight: panel.fittedContentHeight(topBlock.implicitHeight + Style.space(10) + body.implicitHeight + Style.space(4))
 
     PanelKeyCatcher {
@@ -929,7 +929,7 @@ Panel {
         spacing: Style.space(10)
         PanelSectionHeader { text: "LANGUAGES"; foreground: root.fg; fontFamily: root.fontFamily }
 
-        readonly property int keyW: Style.space(112)
+        readonly property int keyW: Style.space(108)
         readonly property int sendW: Style.space(70)
         readonly property int actW: Style.space(72)
 
