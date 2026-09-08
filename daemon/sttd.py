@@ -9,6 +9,7 @@ and the `stt` CLI are its clients. Standard library only.
 
 import asyncio
 import fcntl
+import hashlib
 import json
 import math
 import os
@@ -91,7 +92,47 @@ UI_STRINGS = {
     "ca": {"listening": "Escoltant…", "opening": "Obrint el micròfon…", "transcribing": "Transcrivint…"},
 }
 VOXTYPE_MODELS = os.environ.get("STT_MODELS_DIR") or os.path.join(os.environ.get("XDG_DATA_HOME", os.path.join(HOME, ".local", "share")), "voxtype", "models")
-MODEL_URL = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-{model}.bin"
+# Models come from one pinned commit of ggerganov/whisper.cpp on Hugging Face, and a
+# download is only used when its size and SHA-256 match this table (taken from that
+# commit's LFS pointers). An unlisted model name is refused rather than fetched.
+MODEL_COMMIT = "5359861c739e955e79d9a303bcbc70fb988958b1"
+MODEL_URL = "https://huggingface.co/ggerganov/whisper.cpp/resolve/" + MODEL_COMMIT + "/ggml-{model}.bin"
+MODEL_DIGESTS = {  # name: (sha256, bytes)
+    "base": ("60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe", 147951465),
+    "base-q5_1": ("422f1ae452ade6f30a004d7e5c6a43195e4433bc370bf23fac9cc591f01a8898", 59707625),
+    "base-q8_0": ("c577b9a86e7e048a0b7eada054f4dd79a56bbfa911fbdacf900ac5b567cbb7d9", 81768585),
+    "base.en": ("a03779c86df3323075f5e796cb2ce5029f00ec8869eee3fdfb897afe36c6d002", 147964211),
+    "base.en-q5_1": ("4baf70dd0d7c4247ba2b81fafd9c01005ac77c2f9ef064e00dcf195d0e2fdd2f", 59721011),
+    "base.en-q8_0": ("a4d4a0768075e13cfd7e19df3ae2dbc4a68d37d36a7dad45e8410c9a34f8c87e", 81781811),
+    "large-v1": ("7d99f41a10525d0206bddadd86760181fa920438b6b33237e3118ff6c83bb53d", 3094623691),
+    "large-v2": ("9a423fe4d40c82774b6af34115b8b935f34152246eb19e80e376071d3f999487", 3094623691),
+    "large-v2-q5_0": ("3a214837221e4530dbc1fe8d734f302af393eb30bd0ed046042ebf4baf70f6f2", 1080732091),
+    "large-v2-q8_0": ("fef54e6d898246a65c8285bfa83bd1807e27fadf54d5d4e81754c47634737e8c", 1656129691),
+    "large-v3": ("64d182b440b98d5203c4f9bd541544d84c605196c4f7b845dfa11fb23594d1e2", 3095033483),
+    "large-v3-q5_0": ("d75795ecff3f83b5faa89d1900604ad8c780abd5739fae406de19f23ecd98ad1", 1081140203),
+    "large-v3-turbo": ("1fc70f774d38eb169993ac391eea357ef47c88757ef72ee5943879b7e8e2bc69", 1624555275),
+    "large-v3-turbo-q5_0": ("394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2", 574041195),
+    "large-v3-turbo-q8_0": ("317eb69c11673c9de1e1f0d459b253999804ec71ac4c23c17ecf5fbe24e259a1", 874188075),
+    "medium": ("6c14d5adee5f86394037b4e4e8b59f1673b6cee10e3cf0b11bbdbee79c156208", 1533763059),
+    "medium-q5_0": ("19fea4b380c3a618ec4723c3eef2eb785ffba0d0538cf43f8f235e7b3b34220f", 539212467),
+    "medium-q8_0": ("42a1ffcbe4167d224232443396968db4d02d4e8e87e213d3ee2e03095dea6502", 823369779),
+    "medium.en": ("cc37e93478338ec7700281a7ac30a10128929eb8f427dda2e865faa8f6da4356", 1533774781),
+    "medium.en-q5_0": ("76733e26ad8fe1c7a5bf7531a9d41917b2adc0f20f2e4f5531688a8c6cd88eb0", 539225533),
+    "medium.en-q8_0": ("43fa2cd084de5a04399a896a9a7a786064e221365c01700cea4666005218f11c", 823382461),
+    "small": ("1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b", 487601967),
+    "small-q5_1": ("ae85e4a935d7a567bd102fe55afc16bb595bdb618e11b2fc7591bc08120411bb", 190085487),
+    "small-q8_0": ("49c8fb02b65e6049d5fa6c04f81f53b867b5ec9540406812c643f177317f779f", 264464607),
+    "small.en": ("c6138d6d58ecc8322097e0f987c32f1be8bb0a18532a3f88f734d1bbf9c41e5d", 487614201),
+    "small.en-q5_1": ("bfdff4894dcb76bbf647d56263ea2a96645423f1669176f4844a1bf8e478ad30", 190098681),
+    "small.en-q8_0": ("67a179f608ea6114bd3fdb9060e762b588a3fb3bd00c4387971be4d177958067", 264477561),
+    "tiny": ("be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21", 77691713),
+    "tiny-q5_1": ("818710568da3ca15689e31a743197b520007872ff9576237bda97bd1b469c3d7", 32152673),
+    "tiny-q8_0": ("c2085835d3f50733e2ff6e4b41ae8a2b8d8110461e18821b09a15c40c42d1cca", 43537433),
+    "tiny.en": ("921e4cf8686fdd993dcd081a5da5b6c365bfde1162e72b08d75ac75289920b1f", 77704715),
+    "tiny.en-q5_1": ("c77c5766f1cef09b6b7d47f21b546cbddd4157886b3b5d6d4f709e91e66c7c2b", 32166155),
+    "tiny.en-q8_0": ("5bc2b3860aa151a4c6e7bb095e1fcce7cf12c7b020ca08dcec0c6d018bb7dd94", 43550795),
+}
+MODEL_DOWNLOAD_DEADLINE = 3600  # seconds for the whole transfer, the largest model is ~3 GB
 
 DEFAULT_CONFIG = {
     "engine": "voxtype",          # voxtype | whisper-cpp | command
@@ -679,6 +720,14 @@ def model_path(model):
     return os.path.join(VOXTYPE_MODELS, f"ggml-{model}.bin")
 
 
+def sha256_file(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
 class EngineRun:
     """The transcription process now running (if any), so cancel/shutdown can kill it."""
     proc = None
@@ -1113,6 +1162,10 @@ class Daemon:
         return model
 
     async def fetch_model(self, model):
+        if model not in MODEL_DIGESTS:
+            self.fail(f"No pinned checksum for the {model} model; put ggml-{model}.bin in {VOXTYPE_MODELS} yourself")
+            return
+        want_sha, want_size = MODEL_DIGESTS[model]
         os.makedirs(VOXTYPE_MODELS, exist_ok=True)
         dest = model_path(model)
         fd, part = tempfile.mkstemp(prefix=f"ggml-{model}.", suffix=".part", dir=VOXTYPE_MODELS)
@@ -1123,14 +1176,11 @@ class Daemon:
         log("downloading model", model)
         proc = None
         try:
-            head = await self.loop.run_in_executor(None, lambda: subprocess.run(
-                ["curl", "-sIL", url], capture_output=True, text=True, timeout=60))
-            total = 0
-            for line in head.stdout.splitlines():
-                if line.lower().startswith("content-length:"):
-                    total = int(line.split(":", 1)[1].strip() or 0)
             proc = await asyncio.create_subprocess_exec(
-                "curl", "-sSL", "--fail", "-o", part, url, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
+                "curl", "-sSL", "--fail", "--proto", "=https",
+                "--max-filesize", str(want_size), "--max-time", str(MODEL_DOWNLOAD_DEADLINE),
+                "--speed-limit", "1000", "--speed-time", "60",  # give up when stalled for a minute
+                "-o", part, url, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
             while proc.returncode is None:
                 try:
                     await asyncio.wait_for(proc.wait(), timeout=0.5)
@@ -1140,14 +1190,17 @@ class Daemon:
                     done = os.path.getsize(part)
                 except OSError:
                     done = 0
-                self.download["pct"] = int(done * 100 / total) if total else 0
+                self.download["pct"] = int(done * 100 / want_size)
                 self.broadcast()
             err = (await proc.stderr.read()).decode(errors="replace").strip()
             if proc.returncode != 0:
                 raise RuntimeError(err.splitlines()[-1] if err else f"curl exited {proc.returncode}")
             size = os.path.getsize(part)
-            if size < 1_000_000 or (total and size != total):
-                raise RuntimeError(f"incomplete file ({size} of {total} bytes)")
+            if size != want_size:
+                raise RuntimeError(f"unexpected size ({size} bytes, expected {want_size})")
+            got_sha = await self.loop.run_in_executor(None, sha256_file, part)
+            if got_sha != want_sha:
+                raise RuntimeError("checksum mismatch; the file was discarded")
             os.chmod(part, 0o644)  # mkstemp makes it private; models are plain shared files
             os.replace(part, dest)
             log("model ready", dest)

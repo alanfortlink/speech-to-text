@@ -24,7 +24,7 @@ Dictation for Omarchy: press a key, talk, press it again, and the words are past
 - **Never miss the first words**: Settings → Advanced → "Keep the microphone open" keeps the stream running between recordings, so a recording starts instantly and even includes the half second before the key press. (Not for a Bluetooth headset: it would stay in headset mode all the time.)
 - **Stop is instant**: the recording is transcribed at every pause while you talk, so only the last phrase is left when you stop.
 - **History** of every recording (text + audio) with play, copy and delete, searchable, in the bar popup; kept for a month by default (Settings).
-- **Languages** picked from Whisper's list; the model a language needs is downloaded by itself the first time (about 150 MB for the default model; the bar shows the progress). English-only models are swapped for the multilingual one.
+- **Languages** picked from Whisper's list; the model a language needs is downloaded by itself the first time, from a pinned commit of ggerganov/whisper.cpp and only kept when its size and SHA-256 match the checksums shipped in the daemon (about 150 MB for the default model; the bar shows the progress). English-only models are swapped for the multilingual one.
 - **Engine**: Omarchy's own dictation engine, [voxtype](https://github.com/peteonrails/voxtype) (local Whisper), by default, so there is nothing new to install. whisper.cpp (`whisper-cli`) and any custom command are also supported (Settings → Advanced).
 - **Safe key bindings**: a key that anything else already uses is refused, never taken over.
 - Local only. Nothing leaves your machine.
