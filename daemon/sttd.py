@@ -175,6 +175,9 @@ TERMINAL_CLASSES = {"alacritty", "kitty", "foot", "com.mitchellh.ghostty", "org.
 
 LOG_FILE = os.path.join(RUNTIME, "daemon.log")
 # The CLI next to this daemon: key bindings call it by absolute path, so they work whatever Hyprland's PATH is.
+SOURCE = os.path.abspath(__file__)
+SOURCE_MTIME = os.stat(SOURCE).st_mtime
+EXIT_RELAUNCH = 4   # the source changed underneath us (plugin update): the shell service starts the new one
 STT_CLI = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bin", "stt")
 
 
@@ -515,6 +518,28 @@ class Binds:
 # ---------------------------------------------------------------------------
 # recorder
 # ---------------------------------------------------------------------------
+
+def bt_card_for(device):
+    """bluez_input.88:C9:E8:A7:EC:7E (or bluez_input.88_C9_....0) -> bluez_card.88_C9_E8_A7_EC_7E, else None."""
+    if not device.startswith("bluez_input."):
+        return None
+    return "bluez_card." + device[len("bluez_input."):].split(".")[0].replace(":", "_")
+
+
+def request_headset_profile(device):
+    """Ask for the headset (HFP) profile the moment capture starts. WirePlumber would do the same
+    once it notices the stream, plus its switch timer: asking first saves ~0.15 s on the microphone
+    link. Fire and forget: no-op if the profile is already active, and WirePlumber still restores
+    A2DP when the stream goes away, whoever switched."""
+    card = bt_card_for(device)
+    if not card:
+        return
+    try:
+        subprocess.Popen(["pactl", "set-card-profile", card, "headset-head-unit"],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError:
+        pass
+
 
 class Recorder:
     def __init__(self, device):
@@ -1066,6 +1091,7 @@ class Daemon:
         self.loop = None
         self.stopping = False
         self.stop_event = None
+        self.exit_code = 0
 
     # ---- state ----
     def state_msg(self, full=False):
@@ -1331,6 +1357,7 @@ class Daemon:
                 self.warm.stop()
                 self.warm = None
             self.rec = Recorder(self.cfg.get("device", "default"))
+            request_headset_profile(self.rec.device or "")
             try:
                 self.rec.start()
             except (OSError, ValueError, TypeError) as e:
@@ -1800,6 +1827,20 @@ class Daemon:
             if self.cfg.get("warmMic") and self.state == "idle" and (not self.warm or not self.warm.alive) and not self.cfg.get("warmHoldSecs", 0):
                 self.ensure_warm()
 
+    async def source_watch(self):
+        """Plugin updated while running: exit when idle so the shell service relaunches the new code."""
+        while not self.stopping:
+            await asyncio.sleep(5)
+            try:
+                changed = os.stat(SOURCE).st_mtime != SOURCE_MTIME
+            except OSError:
+                changed = False
+            if changed and self.state == "idle" and not (self.download_task and not self.download_task.done()):
+                log("daemon source changed; relaunching")
+                self.exit_code = EXIT_RELAUNCH
+                await self.shutdown()
+                return
+
     async def shutdown(self):
         if self.stopping:
             return
@@ -1843,6 +1884,7 @@ class Daemon:
         self.ensure_models()
         self.loop.create_task(self.hypr_events())
         self.loop.create_task(self.warm_watch())
+        self.loop.create_task(self.source_watch())
         for s in (signal.SIGTERM, signal.SIGINT):
             self.loop.add_signal_handler(s, lambda: self.loop.create_task(self.shutdown()))
         log(f"sttd {VERSION} listening on {SOCK}")
@@ -1866,7 +1908,9 @@ def main():
         sys.exit(3)
     # The socket is not removed on exit: the shell may already have started a
     # replacement daemon that listens on the same path.
-    asyncio.run(Daemon().run())
+    daemon = Daemon()
+    asyncio.run(daemon.run())
+    sys.exit(daemon.exit_code)
 
 
 if __name__ == "__main__":

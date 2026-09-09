@@ -105,6 +105,11 @@ Item {
     }
     onExited: function(code, status) {
       root.state = ({})
+      if (code === 4) {   // the daemon saw its own source change (plugin update) and asked to be relaunched
+        restartTimer.interval = 500
+        restartTimer.restart()
+        return
+      }
       root.restarts += 1
       if (code !== 3 && root.restarts >= 3) root.daemonError = "daemon keeps exiting (code " + code + ") — check the log"
       restartTimer.interval = code === 3 ? 5000 : Math.min(10000, 1000 + root.restarts * 1000)  // 3 = another instance holds the lock
