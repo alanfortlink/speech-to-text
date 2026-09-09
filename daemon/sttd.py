@@ -528,6 +528,7 @@ class Recorder:
         self.error = ""
         self.listening = False  # real audio is arriving (a Bluetooth mic sends silence while it switches profile)
         self.chunks = 0
+        self.nonzero_run = 0    # consecutive chunks that were not digital silence
         self.standby = False    # warm mode: the stream runs but only the last second is kept
 
     def start(self):
@@ -558,9 +559,14 @@ class Recorder:
             rms = math.sqrt(sum(s * s for s in samples) / max(1, n)) / 32768.0
             level = min(1.0, math.sqrt(rms * 12.0))  # perceptual-ish: speech at normal level fills most of the bar
             self.chunks += 1
-            # Green means "your voice is getting through": any real signal (room noise counts),
-            # or 2 s of chunks for a microphone that is digitally silent.
-            if rms > 0.0005 or self.chunks >= 40:
+            # Green means "your voice is getting through". Clear input (speech, room noise on most
+            # mics) turns it on at once. Otherwise wait for three consecutive chunks that are not
+            # digital silence: a Bluetooth headset delivers exact zeros until its microphone link
+            # is up, the virtual mic emits one stray nonzero chunk right after start (processing
+            # residue), and the headset's own floor then ramps in from a few LSB with the odd
+            # all-zero chunk. No time-based fallback: a mic that only sends zeros is not listening.
+            self.nonzero_run = self.nonzero_run + 1 if rms > 0 else 0
+            if rms > 0.0005 or self.nonzero_run >= 3:
                 self.listening = True
             with self.lock:
                 self.buf += data
